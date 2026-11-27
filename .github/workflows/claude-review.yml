@@ -49,6 +49,13 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    # Claude Code also calls default Sonnet and Haiku models for background tasks; the role allows only one model,
+    # so IAM denies those calls and the run fails. Point them at the input model. This must be job-level env:
+    # claude-code-action copies these from the env context, which a step-level env doesn't reach.
+    env:
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.model }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.model }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,15 +71,6 @@ jobs:
           role-session-name: claude-review-${{ github.run_id }}
 
       - uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
-        # Claude Code also calls default Sonnet/Haiku models for background tasks, which the role doesn't allow
-        # (IAM denies them and the run fails). Point every model setting at the one model the role permits.
-        env:
-          ANTHROPIC_MODEL: ${{ inputs.model }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.model }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.model }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ inputs.model }}
-          CLAUDE_CODE_SUBAGENT_MODEL: ${{ inputs.model }}
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}

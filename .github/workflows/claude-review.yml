@@ -49,6 +49,13 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    # Claude Code also calls default Sonnet and Haiku models for background tasks; the role allows only one model,
+    # so IAM denies those calls and the run fails. Point them at the input model. This must be job-level env:
+    # claude-code-action copies these from the env context, which a step-level env doesn't reach.
+    env:
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.model }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.model }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

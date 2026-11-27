@@ -79,7 +79,10 @@ showing up in diffs.
 
 ## Cost controls
 
-- Consider an AWS Budget alarm filtered to Bedrock.
+- Deploy [aws/bedrock-budget.yaml](aws/bedrock-budget.yaml) (optional, separate stack): a monthly AWS Budget with
+  email alerts. Claude on Bedrock is billed under per-model service names such as
+  "Claude Opus 5.5 (Amazon Bedrock Edition)", so a filter on "Amazon Bedrock" alone misses it; the template's
+  comments say how to confirm the names in Cost Explorer.
 - Switch to Sonnet 5.5 per repo via the caller's `model` input (redeploy the role with `BedrockModel=claude-sonnet-5-5`
   or a second stack, since the role allows one model).
 - Drop `synchronize` from the caller's trigger types to review only on open/ready instead of every push.

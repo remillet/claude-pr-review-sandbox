@@ -22,6 +22,8 @@ jobs:
     uses: ets-berkeley-edu/claude-pr-review/.github/workflows/claude-review.yml@<SHA> # vX.Y.Z
     secrets:
       aws-role-arn: ${{ secrets.CLAUDE_REVIEW_AWS_ROLE_ARN }}
+      # Required for public repos: serious findings outside the PR's changes go here privately, not in comments.
+      security-alert-topic-arn: ${{ secrets.CLAUDE_REVIEW_SECURITY_TOPIC_ARN }}
     # Optional:
     # with:
     #   aws-region: us-west-2

@@ -39,9 +39,13 @@ Terraform, others use none, and one shared role shouldn't belong to any single r
    aws cloudformation describe-stacks --stack-name claude-pr-review --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" --output text
    ```
 
-3. **Org secret.** In the ets-berkeley-edu org settings, add the Actions secret `CLAUDE_REVIEW_AWS_ROLE_ARN` with that
-   ARN, with repository access set to **selected repositories**. (Not strictly secret, but it keeps the account
-   number out of public files.)
+   Add `SecurityAlertEmail=<team list>` to also create the encrypted SNS topic for private security alerts
+   (see Behavior). The address must confirm the subscription email from AWS.
+
+3. **Org secrets.** In the ets-berkeley-edu org settings, add the Actions secrets `CLAUDE_REVIEW_AWS_ROLE_ARN` (the
+   `RoleArn` output) and `CLAUDE_REVIEW_SECURITY_TOPIC_ARN` (the `SecurityAlertTopicArn` output), with repository
+   access set to **selected repositories**. (Not strictly secret, but it keeps the account number out of public
+   files.)
 
 4. **Publish this repo** as `ets-berkeley-edu/claude-pr-review` (public, so other org repos can call the workflow).
    Tag a release and pin callers to its commit SHA.
@@ -50,7 +54,7 @@ Terraform, others use none, and one shared role shouldn't belong to any single r
 
 1. Add the repo's OIDC subject (`gh api repos/OWNER/REPO/actions/oidc/customization/sub`) to `GitHubSubjects`
    and redeploy the stack (the role trusts only listed repos).
-2. Add the repo to the org secret's selected repositories.
+2. Add the repo to both org secrets' selected repositories.
 3. Copy `examples/caller-claude-review.yml` to the repo's `.github/workflows/claude-review.yml`, fill in the SHA.
 4. Optional: a `CLAUDE.md` at the repo root gives Claude project-specific review rules.
 
@@ -65,7 +69,15 @@ the org's plan; public repos don't.
 
 - Runs on PR open, push, reopen and ready-for-review. Skips drafts, bot PRs and **fork PRs** (GitHub gives fork
   runs no OIDC token; this is deliberate: `pull_request_target` is never used).
-- Posts inline comments on findings, or one "no issues" comment.
+- Posts inline comments on findings, or one "no issues" comment. Comments describe the problem and the fix, never
+  step-by-step exploitation.
+- **Security issues outside the PR on public repos.** Comments on a public repo are public, and a flaw Claude notices
+  in code the PR doesn't change may already be deployed. For critical or high severity issues of that kind,
+  Claude posts only "possible security issue outside this PR's changes; maintainers notified privately", the
+  details go by email through the SNS topic, and the check fails. Problems in lines the PR adds or changes are
+  already public in the diff, so they get normal inline comments. Private repos get inline comments for everything.
+- Claude's transcript stays out of the job log (Actions logs of public repos are public). The `show-full-output`
+  input prints it for debugging, and only takes effect on private repos.
 - Claude can read the checkout and the PR, and comment. It can't push, run arbitrary commands, or reach other AWS
   services.
 - Bounded by `--max-turns 30`, a 20-minute job timeout, and cancel-on-new-push.

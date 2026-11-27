@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Monthly AWS Budget with email alerts for Claude PR review spend on Amazon Bedrock. Optional; separate from the
+  role stack so an account that already has its own cost controls can skip it.
+
+# Deploy once per AWS account (Budgets is global; deploy in any region):
+#
+#   aws cloudformation deploy \
+#     --stack-name claude-pr-review-budget \
+#     --template-file aws/bedrock-budget.yaml \
+#     --parameter-overrides NotifyEmail=<team list address> MonthlyLimitUsd=20
+#
+# Claude models on Bedrock are billed under their own service name, such as
+# "Claude Opus 5.5 (Amazon Bedrock Edition)", not under "Amazon Bedrock". A budget filtered only on
+# "Amazon Bedrock" misses them. After the first review, confirm the names Cost Explorer shows with:
+#
+#   aws ce get-dimension-values --region us-east-1 --dimension SERVICE \
+#     --time-period Start=<YYYY-MM-01>,End=<tomorrow> --search-string Claude
+#
+# and redeploy with ServiceNames set to exactly those names if they differ.
+
+Parameters:
+  NotifyEmail:
+    Type: String
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+$"
+    Description: Address that gets the alerts. Use a team list, not a personal address, where possible.
+  MonthlyLimitUsd:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: Monthly budget in US dollars.
+  ServiceNames:
+    Type: CommaDelimitedList
+    Default: "Claude Opus 5.5 (Amazon Bedrock Edition),Claude Sonnet 5.5 (Amazon Bedrock Edition),Amazon Bedrock"
+    Description: Cost Explorer SERVICE values to count. Must match Cost Explorer exactly.
+  BudgetName:
+    Type: String
+    Default: claude-pr-review-bedrock
+
+Resources:
+  BedrockBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Ref BudgetName
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyLimitUsd
+          Unit: USD
+        CostFilters:
+          Service: !Ref ServiceNames
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref NotifyEmail
+
+Outputs:
+  BudgetName:
+    Value: !Ref BedrockBudget

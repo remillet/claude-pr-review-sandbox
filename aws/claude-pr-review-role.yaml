@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  IAM role that GitHub Actions assumes through OIDC to run Claude PR reviews on Amazon Bedrock.
+  It can only invoke one Claude model; it has no other AWS access. No stored keys.
+
+# Standalone on purpose: repos use different IaC (Terraform for Serena and BMU, none for others), and this role
+# serves all of them. Deploy once per AWS account:
+#
+#   aws cloudformation deploy \
+#     --stack-name claude-pr-review \
+#     --template-file aws/claude-pr-review-role.yaml \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --parameter-overrides GitHubSubjects=repo:ets-berkeley-edu@283538/cspace-media-server@1410958489
+#
+# To add repos later, redeploy with a longer GitHubSubjects list.
+
+Parameters:
+  GitHubSubjects:
+    Type: CommaDelimitedList
+    Description: >-
+      The start of each allowed repo's OIDC sub claim, before ":pull_request", exactly as GitHub issues it. Get it
+      with: gh api repos/OWNER/REPO/actions/oidc/customization/sub (use sub_claim_prefix; if use_default is true and
+      there is no prefix, it's repo:OWNER/REPO). Repos with immutable subjects look like
+      repo:ets-berkeley-edu@283538/cspace-media-server@1410958489, which survives renames and can't be claimed by a
+      recreated repo of the same name. For the whole org later: repo:ets-berkeley-edu@283538/* (immutable repos)
+      and, only if needed, repo:ets-berkeley-edu/* (the rest).
+  BedrockModel:
+    Type: String
+    Default: claude-opus-5-5
+    AllowedPattern: "^claude-[a-z0-9-]+$"
+    Description: Claude model the role may invoke, without the "anthropic." or region prefix.
+  CreateOidcProvider:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Leave false where the GitHub OIDC provider already exists; an account allows only one provider per URL. In the
+      UC Berkeley account that's still an open question for Ops (Serena's DP2); the personal account has one.
+  RoleName:
+    Type: String
+    Default: github-claude-pr-review
+
+Conditions:
+  MakeOidcProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  ReviewRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Claude PR reviews from GitHub Actions (Bedrock invoke only)
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - MakeOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Only pull_request runs of the listed repos. Fork PRs never get an OIDC token, and the job uses no
+                # GitHub environment, so the subject is always <repo subject>:pull_request.
+                token.actions.githubusercontent.com:sub: !Split
+                  - ","
+                  - !Sub
+                    - "${Inner}:pull_request"
+                    - Inner: !Join [":pull_request,", !Ref GitHubSubjects]
+      Policies:
+        - PolicyName: invoke-claude-on-bedrock
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeOneClaudeModel
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:GetInferenceProfile
+                Resource:
+                  # Cross-region profile (us./global.) in this account, and the models it routes to in any region.
+                  - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*.anthropic.${BedrockModel}*
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.${BedrockModel}*
+              - Sid: DiscoverInferenceProfiles
+                # List actions take no resource ARN. Read-only.
+                Effect: Allow
+                Action: bedrock:ListInferenceProfiles
+                Resource: "*"
+              - Sid: MarketplaceSubscriptionViaBedrock
+                Effect: Allow
+                Action:
+                  - aws-marketplace:ViewSubscriptions
+                  - aws-marketplace:Subscribe
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:CalledViaLast: bedrock.amazonaws.com
+
+Outputs:
+  RoleArn:
+    Description: Store as the CLAUDE_REVIEW_AWS_ROLE_ARN Actions secret (org level, limited to the selected repos).
+    Value: !GetAtt ReviewRole.Arn

@@ -1,0 +1,29 @@
+# Copy to .github/workflows/claude-review.yml in each repo that should get Claude PR reviews.
+# Pin the reusable workflow to a commit SHA of ets-berkeley-edu/claude-pr-review (replace <SHA> and the version).
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions: {}
+
+# One review per PR at a time; a new push cancels the review of the old one.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ets-berkeley-edu/claude-pr-review/.github/workflows/claude-review.yml@<SHA> # vX.Y.Z
+    secrets:
+      aws-role-arn: ${{ secrets.CLAUDE_REVIEW_AWS_ROLE_ARN }}
+    # Optional:
+    # with:
+    #   aws-region: us-west-2
+    #   model: us.anthropic.claude-sonnet-5-5   # the role must allow this model too (BedrockModel parameter)
+    #   extra-instructions: "Also check that new endpoints enforce the instructor/admin role checks."

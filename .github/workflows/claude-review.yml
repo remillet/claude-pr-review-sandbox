@@ -23,6 +23,12 @@ on:
       max-turns:
         type: number
         default: 30
+      show-full-output:
+        description: >-
+          Print Claude's full transcript in the job log, for debugging. Never on public repos: their Actions logs
+          are public, and the transcript can include code and findings.
+        type: boolean
+        default: false
       extra-instructions:
         description: Optional repo-specific review guidance, appended to the prompt
         type: string
@@ -31,6 +37,11 @@ on:
       aws-role-arn:
         description: ARN of the github-claude-pr-review role
         required: true
+      security-alert-topic-arn:
+        description: >-
+          SNS topic (SecurityAlertTopicArn output of the role stack) that gets serious security findings in code
+          this PR doesn't change, privately. Required for public repos.
+        required: false
 
 permissions:
   contents: read
@@ -49,9 +60,9 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    # Claude Code also calls default Sonnet and Haiku models for background tasks; the role allows only one model,
-    # so IAM denies those calls and the run fails. Point them at the input model. This must be job-level env:
-    # claude-code-action copies these from the env context, which a step-level env doesn't reach.
+    # Claude Code also calls default Sonnet and Haiku models for background tasks, which the one-model role
+    # denies. Point them at the input model. This must be job-level env: claude-code-action copies these from the
+    # env context, which a step-level env doesn't reach.
     env:
       ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.model }}
       ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.model }}
@@ -70,14 +81,17 @@ jobs:
           role-duration-seconds: 3600
           role-session-name: claude-review-${{ github.run_id }}
 
-      - uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
+      - id: claude
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           use_bedrock: "true"
+          show_full_output: ${{ inputs.show-full-output && github.event.repository.private }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Glob,Grep"
+            --json-schema '{"type":"object","properties":{"private_findings":{"type":"array","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["critical","high"]},"summary":{"type":"string"},"fix":{"type":"string"}},"required":["file","severity","summary","fix"]}}},"required":["private_findings"]}'
           # Only the PR number, repo name and visibility are interpolated, never the PR's title or body.
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
@@ -102,7 +116,39 @@ jobs:
             Skip style nits a linter would catch. Don't praise or summarize the PR.
 
             Post each finding as an inline comment on the relevant line with
-            mcp__github_inline_comment__create_inline_comment. If you find nothing, post one short PR comment
-            with `gh pr comment` saying the review found no issues.
+            mcp__github_inline_comment__create_inline_comment. In comments, describe the problem and the fix;
+            never give step-by-step exploitation. If you find nothing, post one short PR comment with
+            `gh pr comment` saying the review found no issues.
+
+            ${{ github.event.repository.private && 'Your structured output must have an empty private_findings list: in this private repository, report everything as comments.' || 'This repository is public, so everyone can read your comments. If you find a critical or high severity security vulnerability in code this PR does not add or change (code already merged, possibly deployed), do not mention it in any comment, even indirectly. Put it in private_findings in your structured output instead (file, line, severity, summary, fix); a later step sends it to the maintainers privately. Then post one PR comment with `gh pr comment` saying only: "The review found a possible security issue outside this PR''s changes. The maintainers have been notified privately." Problems in lines this PR adds or changes are already public in the diff: comment on them inline as usual. Leave private_findings empty when there is nothing of that kind.' }}
 
             ${{ inputs.extra-instructions }}
+
+      # Sends private_findings (public repos only; see the prompt) to the SNS topic and fails the check. The
+      # findings go only to SNS: never echo them, because Actions logs of public repos are public.
+      - name: Report security findings privately
+        if: success() && !github.event.repository.private
+        env:
+          FINDINGS: ${{ steps.claude.outputs.structured_output }}
+          TOPIC_ARN: ${{ secrets.security-alert-topic-arn }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          [ -n "$FINDINGS" ] || exit 0
+          count=$(jq '(.private_findings // []) | length' <<<"$FINDINGS")
+          if [ "$count" -eq 0 ]; then exit 0; fi
+          if [ -z "$TOPIC_ARN" ]; then
+            echo "::error::The review found $count possible security issue(s) outside this PR's changes, but no security-alert-topic-arn secret is set, so nobody was told. Set it, then re-run this job."
+            exit 1
+          fi
+          region=$(cut -d: -f4 <<<"$TOPIC_ARN")
+          msg="$RUNNER_TEMP/claude-security-alert.txt"
+          jq -r --arg pr "$PR_URL" '
+            "Claude PR review found possible security issues in code outside this pull request:\n\($pr)\n",
+            (.private_findings[] | "[\(.severity)] \(.file):\(.line // "?")\n\(.summary)\nFix: \(.fix)\n")
+          ' <<<"$FINDINGS" > "$msg"
+          aws sns publish --region "$region" --topic-arn "$TOPIC_ARN" \
+            --subject "Claude review: possible security issue in ${GITHUB_REPOSITORY}" \
+            --message "file://$msg" >/dev/null
+          rm -f "$msg"
+          echo "::error::The review found $count possible security issue(s) outside this PR's changes. Details were sent privately to the maintainers."
+          exit 1

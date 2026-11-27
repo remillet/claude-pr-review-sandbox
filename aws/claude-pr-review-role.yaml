@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   IAM role that GitHub Actions assumes through OIDC to run Claude PR reviews on Amazon Bedrock.
-  It can only invoke one Claude model; it has no other AWS access. No stored keys.
+  It can only invoke one Claude model and, optionally, publish to one encrypted SNS topic for private security
+  alerts; it has no other AWS access. No stored keys.
 
 # Standalone on purpose: repos use different IaC (Terraform for Serena and BMU, none for others), and this role
 # serves all of them. Deploy once per AWS account:
@@ -39,9 +40,18 @@ Parameters:
   RoleName:
     Type: String
     Default: github-claude-pr-review
+  SecurityAlertEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^@\\s]+@[^@\\s]+$"
+    Description: >-
+      Where serious security findings in code outside a public repo's PR go, privately, through an encrypted SNS
+      topic (a team list, not a personal address). Empty: no topic, and public repos' reviews fail when they find
+      one. The address must confirm the subscription email from AWS.
 
 Conditions:
   MakeOidcProvider: !Equals [!Ref CreateOidcProvider, "true"]
+  MakeAlertTopic: !Not [!Equals [!Ref SecurityAlertEmail, ""]]
 
 Resources:
   GitHubOidcProvider:
@@ -50,6 +60,16 @@ Resources:
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList: [sts.amazonaws.com]
+
+  SecurityAlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: MakeAlertTopic
+    Properties:
+      TopicName: !Sub ${RoleName}-security-alerts
+      KmsMasterKeyId: alias/aws/sns
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref SecurityAlertEmail
 
   ReviewRole:
     Type: AWS::IAM::Role
@@ -107,8 +127,32 @@ Resources:
                 Condition:
                   StringEquals:
                     aws:CalledViaLast: bedrock.amazonaws.com
+              - !If
+                - MakeAlertTopic
+                - Sid: PublishSecurityAlerts
+                  Effect: Allow
+                  Action: sns:Publish
+                  Resource: !Ref SecurityAlertTopic
+                - !Ref AWS::NoValue
+              - !If
+                - MakeAlertTopic
+                # The topic is encrypted with the AWS managed SNS key; publishing needs it, only through SNS.
+                - Sid: UseSnsKeyViaSns
+                  Effect: Allow
+                  Action:
+                    - kms:GenerateDataKey*
+                    - kms:Decrypt
+                  Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub sns.${AWS::Region}.amazonaws.com
+                - !Ref AWS::NoValue
 
 Outputs:
   RoleArn:
     Description: Store as the CLAUDE_REVIEW_AWS_ROLE_ARN Actions secret (org level, limited to the selected repos).
     Value: !GetAtt ReviewRole.Arn
+  SecurityAlertTopicArn:
+    Condition: MakeAlertTopic
+    Description: Store as the CLAUDE_REVIEW_SECURITY_TOPIC_ARN Actions secret, next to the role ARN.
+    Value: !Ref SecurityAlertTopic

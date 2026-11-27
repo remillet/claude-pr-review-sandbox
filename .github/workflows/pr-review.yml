@@ -19,9 +19,10 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: remillet/claude-pr-review-sandbox/.github/workflows/claude-review.yml@fa865b16bbff119d5ebfff5007497265097b6dbc # sandbox
+    uses: remillet/claude-pr-review-sandbox/.github/workflows/claude-review.yml@9daabb875cffd9aa83f16637a6131c7b4a204bf6 # sandbox
     secrets:
       aws-role-arn: ${{ secrets.CLAUDE_REVIEW_AWS_ROLE_ARN }}
+      security-alert-topic-arn: ${{ secrets.CLAUDE_REVIEW_SECURITY_TOPIC_ARN }}
     # Optional:
     # with:
     #   aws-region: us-west-2

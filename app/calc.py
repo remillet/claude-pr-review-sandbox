@@ -22,3 +22,10 @@ def find_user(conn, username):
     cursor = conn.cursor()
     cursor.execute(f"SELECT id, name FROM users WHERE name = '{username}'")
     return cursor.fetchone()
+
+
+def user_average(cookie_value):
+    """Average the scores saved in the user's session."""
+    from app.session import load_session
+
+    return average(load_session(cookie_value)["scores"])

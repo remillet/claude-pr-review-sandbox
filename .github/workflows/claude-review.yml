@@ -23,6 +23,12 @@ on:
       max-turns:
         type: number
         default: 30
+      show-full-output:
+        description: >-
+          Print Claude's full transcript in the job log, for debugging. Never on public repos: their Actions logs
+          are public, and the transcript can include code and findings.
+        type: boolean
+        default: false
       extra-instructions:
         description: Optional repo-specific review guidance, appended to the prompt
         type: string
@@ -73,6 +79,7 @@ jobs:
       - uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           use_bedrock: "true"
+          show_full_output: ${{ inputs.show-full-output && github.event.repository.private }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: >-
             --model ${{ inputs.model }}
